@@ -57,7 +57,7 @@ class MaskConv(nn.Module):
         """
         for module in self.seq_module:
             x = module(x)
-            mask = torch.ByteTensor(x.size()).fill_(0)
+            mask = torch.BoolTensor(x.size()).fill_(0)
             if x.is_cuda:
                 mask = mask.cuda()
             for i, length in enumerate(lengths):
@@ -106,33 +106,19 @@ class Lookahead(nn.Module):
     # input shape - sequence, batch, feature - TxNxH
     # output shape - same as input
     def __init__(self, n_features, context):
-        # should we handle batch_first=True?
         super(Lookahead, self).__init__()
-        self.n_features = n_features
-        self.weight = Parameter(torch.Tensor(n_features, context + 1))
         assert context > 0
         self.context = context
-        self.register_parameter('bias', None)
-        self.init_parameters()
+        self.n_features = n_features
+        self.pad = (0, self.context - 1)
+        self.conv = nn.Conv1d(self.n_features, self.n_features, kernel_size=self.context, stride=1,
+                              groups=self.n_features, padding=0, bias=None)
 
-    def init_parameters(self):  # what's a better way initialiase this layer?
-        stdv = 1. / math.sqrt(self.weight.size(1))
-        self.weight.uniform_(-stdv, stdv)
-
-    def forward(self, input):
-        seq_len = input.size(0)
-        # pad the 0th dimension (T/sequence) with zeroes whose number = context
-        # Once pytorch's padding functions have settled, should move to those.
-        padding = torch.zeros(self.context, *(input.size()[1:])).type_as(input)
-        x = torch.cat((input, padding), 0)
-
-        # add lookahead windows (with context+1 width) as a fourth dimension
-        # for each seq-batch-feature combination
-        x = [x[i:i + self.context + 1] for i in range(seq_len)]  # TxLxNxH - sequence, context, batch, feature
-        x = torch.stack(x)
-        x = x.permute(0, 2, 3, 1)  # TxNxHxL - sequence, batch, feature, context
-
-        x = torch.mul(x, self.weight).sum(dim=3)
+    def forward(self, x):
+        x = x.transpose(0, 1).transpose(1, 2)
+        x = F.pad(x, pad=self.pad, value=0)
+        x = self.conv(x)
+        x = x.transpose(1, 2).transpose(0, 1).contiguous()
         return x
 
     def __repr__(self):
@@ -143,7 +129,7 @@ class Lookahead(nn.Module):
 
 class DeepSpeech(nn.Module):
     def __init__(self, rnn_type=nn.LSTM, labels="abc", rnn_hidden_size=768, nb_layers=5, audio_conf=None,
-                 bidirectional=True, context=20, mixed_precision=False):
+                 bidirectional=True, context=20):
         super(DeepSpeech, self).__init__()
 
         # model metadata needed for serialization/deserialization
@@ -156,7 +142,6 @@ class DeepSpeech(nn.Module):
         self.audio_conf = audio_conf or {}
         self.labels = labels
         self.bidirectional = bidirectional
-        self.mixed_precision = mixed_precision
 
         sample_rate = self.audio_conf.get("sample_rate", 16000)
         window_size = self.audio_conf.get("window_size", 0.02)
@@ -201,8 +186,6 @@ class DeepSpeech(nn.Module):
         self.inference_softmax = InferenceBatchSoftmax()
 
     def forward(self, x, lengths):
-        if x.is_cuda and self.mixed_precision:
-            x = x.half()
         lengths = lengths.cpu().int()
         output_lengths = self.get_seq_lens(lengths)
         x, _ = self.conv(x, output_lengths)
@@ -244,8 +227,7 @@ class DeepSpeech(nn.Module):
                     labels=package['labels'],
                     audio_conf=package['audio_conf'],
                     rnn_type=supported_rnns[package['rnn_type']],
-                    bidirectional=package.get('bidirectional', True),
-                    mixed_precision=package.get('mixed_precision', False))
+                    bidirectional=package.get('bidirectional', True))
         model.load_state_dict(package['state_dict'])
         for x in model.rnns:
             x.flatten_parameters()
@@ -258,8 +240,7 @@ class DeepSpeech(nn.Module):
                     labels=package['labels'],
                     audio_conf=package['audio_conf'],
                     rnn_type=supported_rnns[package['rnn_type']],
-                    bidirectional=package.get('bidirectional', True),
-                    mixed_precision=package.get('mixed_precision', False))
+                    bidirectional=package.get('bidirectional', True))
         model.load_state_dict(package['state_dict'])
         return model
 
@@ -275,7 +256,6 @@ class DeepSpeech(nn.Module):
             'labels': model.labels,
             'state_dict': model.state_dict(),
             'bidirectional': model.bidirectional,
-            'mixed_precision': model.mixed_precision
         }
         if optimizer is not None:
             package['optim_dict'] = optimizer.state_dict()
