@@ -11,12 +11,11 @@ import re
 parser = argparse.ArgumentParser(description='Processes downloaded IARPA babel corpus')
 parser.add_argument("--target-dir", default='CommonVoice_dataset/', type=str, help="Directory to store the dataset.")
 parser.add_argument("--data-dir", type=str, help="Path to the BABEL directory file ")
+parser.add_argument('--sample-rate', default=16000, type=int, help='Sample rate')
 parser.add_argument('--min-duration', default=1, type=int,
                     help='Prunes training samples shorter than the min duration (given in seconds, default 1)')
 parser.add_argument('--max-duration', default=15, type=int,
                     help='Prunes training samples longer than the max duration (given in seconds, default 15)')
-parser.add_argument('--files-to-process', default="cv-valid-dev.csv,cv-valid-test.csv,cv-valid-train.csv",
-                    type=str, help='list of *.csv file names to process')
 args = parser.parse_args()
 
 def read_transcription_file(file_path, audio_file_path):
@@ -79,8 +78,9 @@ def convert_to_wav(txt_file, sph_path, target_dir):
         file_path = x["audio_file"]
         text = x["transcription"]
         start_time = x["start_time"]
-        offset = x["end_time"] - start_time
+        duration = x["end_time"] - start_time
         file_name = os.path.splitext(os.path.basename(file_path))[0]
+        file_name = str(start_time) + "_" + str(duration) + file_name
         text = text.strip().upper()
         with open(os.path.join(txt_dir, file_name + '.txt'), 'w') as f:
             f.write(text)
@@ -89,7 +89,7 @@ def convert_to_wav(txt_file, sph_path, target_dir):
             args.sample_rate,
             os.path.join(wav_dir, file_name + '.wav'),
             start_time,
-            offset)
+            duration)
         subprocess.call([cmd], shell=True)
 
     print('Converting sph to wav for {}.'.format(txt_file))
@@ -121,16 +121,34 @@ def main():
         tar.close()
         unpacked_location = target_unpacked_dir
 
-    for root, dirs, files in os.walk(unpacked_location)
-        convert_to_wav(os.path.join(target_unpacked_dir, 'cv_corpus_v1/', csv_file),
-                       os.path.join(target_dir, os.path.splitext(csv_file)[0]))
-
+    roots = {}
+    # collect all the filepaths
+    for root, dirs, files in os.walk(unpacked_location):        
+        roots[root] = files
+    
+    audio_trans_pairs = [] # this is a list of tuples
+    for root in roots:
+        # find all the audio directories
+        if re.search(r"/audio", root):
+            transcription_root = re.sub(r"/audio", "/transcription", root)
+            print(transcription_root)
+            for fp in roots[root]:
+                txt_fp = re.sub(r"\.sph", ".txt", fp)
+                if os.path.exists(os.path.join(transcription_root, txt_fp)):
+                    pair_tuple = (os.path.join(transcription_root, txt_fp),
+                                  os.path.join(root, fp))
+                    audio_trans_pairs.append(pair_tuple)
+                
+    for txt_path, audio_path in audio_trans_pairs:
+        convert_to_wav(txt_path,
+                        audio_path, target_dir)
+        
+    # make a separate manifest for each 
     print('Creating manifests...')
-    for csv_file in args.files_to_process.split(','):
-        create_manifest(os.path.join(target_dir, os.path.splitext(csv_file)[0]),
-                        os.path.splitext(csv_file)[0] + '_manifest.csv',
-                        args.min_duration,
-                        args.max_duration)
+    create_manifest(target_dir,
+                    os.path.splitext(data_dir)[0] + '_manifest.csv',
+                    args.min_duration,
+                    args.max_duration)
 
 
 if __name__ == "__main__":
