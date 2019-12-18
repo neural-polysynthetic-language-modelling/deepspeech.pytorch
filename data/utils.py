@@ -24,7 +24,7 @@ def create_manifest(data_path, output_path, min_duration=None, max_duration=None
 def order_and_prune_files(file_paths, min_duration, max_duration):
     print("Sorting manifests...")
     duration_file_paths = [(path, float(subprocess.check_output(
-        ['soxi -D \"%s\"' % path.strip()], shell=True))) for path in file_paths]
+        ['soxi -D \"%s\"' % path.strip()], shell=True))) for path in tqdm(file_paths)]
     if min_duration and max_duration:
         print("Pruning manifests between %d and %d seconds" % (min_duration, max_duration))
         duration_file_paths = [(path, duration) for path, duration in duration_file_paths if

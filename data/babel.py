@@ -7,6 +7,7 @@ from multiprocessing.pool import ThreadPool
 import subprocess
 from utils import create_manifest
 import re
+from sphfile import SPHFile
 
 parser = argparse.ArgumentParser(description='Processes downloaded IARPA babel corpus')
 parser.add_argument("--target-dir", default='CommonVoice_dataset/', type=str, help="Directory to store the dataset.")
@@ -78,20 +79,17 @@ def convert_to_wav(txt_file, sph_path, target_dir):
         file_path = x["audio_file"]
         text = x["transcription"]
         start_time = x["start_time"]
-        duration = x["end_time"] - start_time
+        end_time = x["end_time"]
         file_name = os.path.splitext(os.path.basename(file_path))[0]
-        file_name = str(start_time) + "_" + str(duration) + file_name
+        file_name = str(start_time) + "_" + str(end_time) + file_name
         text = text.strip().upper()
         with open(os.path.join(txt_dir, file_name + '.txt'), 'w') as f:
             f.write(text)
-        cmd = "sox -t sph {} -r {} -b 16 -c 1 -t wav {} trim {} {}".format(
-            os.path.join(path_to_data, file_path),
-            args.sample_rate,
-            os.path.join(wav_dir, file_name + '.wav'),
-            start_time,
-            duration)
-        subprocess.call([cmd], shell=True)
-
+        audio_in = SPHFile(os.path.join(path_to_data, file_path))
+        audio_in.write_wav(os.path.join(wav_dir, file_name + ".wav"), 
+                           start=start_time,
+                           stop=end_time)
+    
     print('Converting sph to wav for {}.'.format(txt_file))
     # generate processed data
     data = read_transcription_file(txt_file, sph_path)
@@ -121,6 +119,8 @@ def main():
         tar.close()
         unpacked_location = target_unpacked_dir
 
+    path_flattened = re.sub(r"[\/]", "_", os.path.splitext(args.data_dir)[0])
+    os.makedirs(os.path.join(target_dir, path_flattened), exist_ok=True)
     roots = {}
     # collect all the filepaths
     for root, dirs, files in os.walk(unpacked_location):        
@@ -141,12 +141,13 @@ def main():
                 
     for txt_path, audio_path in audio_trans_pairs:
         convert_to_wav(txt_path,
-                        audio_path, target_dir)
+                        audio_path, 
+                        os.path.join(target_dir,path_flattened))
         
     # make a separate manifest for each 
     print('Creating manifests...')
-    create_manifest(target_dir,
-                    os.path.splitext(data_dir)[0] + '_manifest.csv',
+    create_manifest(os.path.join(target_dir,path_flattened),
+                    path_flattened + '_manifest.csv',
                     args.min_duration,
                     args.max_duration)
 
