@@ -46,7 +46,7 @@ def read_transcription_file(file_path, audio_file_path):
             #if this regex matched then the line is a timestamp
             if time_stamp_match:
                 timestamp = float(time_stamp_match.group(1))
-                if transcription and transcription.strip() != "<no-speech>":
+                if transcription and transcription.strip() not in ['(())',  "<no-speech>"]:
                     single_instance = {"start_time": last_timestamp, 
                                        "end_time": timestamp,
                                        "transcription": transcription,
@@ -79,18 +79,20 @@ def convert_to_wav(txt_file, sph_path, target_dir):
         file_path = x["audio_file"]
         text = x["transcription"]
         start_time = x["start_time"]
-        end_time = x["end_time"]
+        duration = x["end_time"] - start_time
         file_name = os.path.splitext(os.path.basename(file_path))[0]
-        file_name = str(start_time) + "_" + str(end_time) + file_name
+        file_name = str(start_time) + "_" + str(duration) + file_name
         text = text.strip().upper()
         with open(os.path.join(txt_dir, file_name + '.txt'), 'w') as f:
             f.write(text)
-        audio_in = SPHFile(os.path.join(path_to_data, file_path))
-        audio_in.write_wav(os.path.join(wav_dir, file_name + ".wav"), 
-                           start=start_time,
-                           stop=end_time)
-    
-    print('Converting sph to wav for {}.'.format(txt_file))
+        cmd = "sox -v 0.6 -t wav {} -r {} -b 16 -c 1 -t wav {} trim {} {}".format(
+                os.path.join(path_to_data, file_path),
+                args.sample_rate,
+                os.path.join(wav_dir, file_name + ".wav"),
+                start_time,
+                duration)
+        subprocess.call([cmd], shell=True)
+    print('Converting wav to wav for {}.'.format(txt_file))
     # generate processed data
     data = read_transcription_file(txt_file, sph_path)
     with ThreadPool(10) as pool:
@@ -133,7 +135,7 @@ def main():
             transcription_root = re.sub(r"/audio", "/transcription", root)
             print(transcription_root)
             for fp in roots[root]:
-                txt_fp = re.sub(r"\.sph", ".txt", fp)
+                txt_fp = re.sub(r"\.wav", ".txt", fp)
                 if os.path.exists(os.path.join(transcription_root, txt_fp)):
                     pair_tuple = (os.path.join(transcription_root, txt_fp),
                                   os.path.join(root, fp))
