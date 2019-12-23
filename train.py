@@ -155,9 +155,12 @@ if __name__ == '__main__':
             else:
                 start_iter += 1
             avg_loss = int(package.get('avg_loss', 0))
-            loss_results, cer_results, wer_results = package['loss_results'], package['cer_results'], \
+            old_loss_results, old_cer_results, old_wer_results = package['loss_results'], package['cer_results'], \
                                                      package['wer_results']
-            best_wer = wer_results[start_epoch]
+            loss_results = torch.cat((old_loss_results, loss_results[start_epoch:]), 0)
+            cer_results = torch.cat((old_cer_results, loss_results[start_epoch:]), 0)
+            wer_results = torch.cat((old_wer_results, loss_results[start_epoch:]), 0)
+            best_wer = wer_results[start_epoch - 1]
             if main_proc and args.visdom:  # Add previous scores to visdom graph
                 visdom_logger.load_previous_values(start_epoch, package)
             if main_proc and args.tensorboard:  # Previous scores to tensorboard logs
