@@ -10,9 +10,9 @@ import torch.utils.data.distributed
 from apex import amp
 from apex.parallel import DistributedDataParallel
 from warpctc_pytorch import CTCLoss
-
+from tqdm import tqdm
 from data.data_loader import AudioDataLoader, SpectrogramDataset, BucketingSampler, DistributedBucketingSampler
-from decoder import GreedyDecoder
+from decoder import BeamCTCDecoder,GreedyDecoder
 from logger import VisdomLogger, TensorBoardLogger
 from model import DeepSpeech, supported_rnns
 from test import evaluate
@@ -183,7 +183,7 @@ if __name__ == '__main__':
                            audio_conf=audio_conf,
                            bidirectional=args.bidirectional)
 
-    decoder = GreedyDecoder(labels)
+    decoder = GreedyDecoder(labels)#, lm_path="guarani.arpa", alpha=.4, beta=.3, beam_width=128)
     train_dataset = SpectrogramDataset(audio_conf=audio_conf, manifest_filepath=args.train_manifest, labels=labels,
                                        normalize=True, augment=args.augment)
     test_dataset = SpectrogramDataset(audio_conf=audio_conf, manifest_filepath=args.val_manifest, labels=labels,
@@ -227,7 +227,8 @@ if __name__ == '__main__':
         model.train()
         end = time.time()
         start_epoch_time = time.time()
-        for i, (data) in enumerate(train_loader, start=start_iter):
+        batch_wrap = tqdm(enumerate(train_loader, start=start_iter), total=len(train_sampler))
+        for i, (data) in batch_wrap:
             if i == len(train_sampler):
                 break
             inputs, targets, input_percentages, target_sizes = data
@@ -271,11 +272,9 @@ if __name__ == '__main__':
             batch_time.update(time.time() - end)
             end = time.time()
             if not args.silent:
-                print('Epoch: [{0}][{1}/{2}]\t'
-                      'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                      'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                      'Loss {loss.val:.4f} ({loss.avg:.4f})\t'.format(
-                    (epoch + 1), (i + 1), len(train_sampler), batch_time=batch_time, data_time=data_time, loss=losses))
+                batch_wrap.set_description('Epoch: [{0}]'
+                                           'Loss {loss.val:.4f} ({loss.avg:.4f})'.format(
+                                           (epoch + 1), loss=losses))
             if args.checkpoint_per_batch > 0 and i > 0 and (i + 1) % args.checkpoint_per_batch == 0 and main_proc:
                 file_path = '%s/deepspeech_checkpoint_epoch_%d_iter_%d.pth' % (save_folder, epoch + 1, i + 1)
                 print("Saving checkpoint model to %s" % file_path)
@@ -332,13 +331,14 @@ if __name__ == '__main__':
             g['lr'] = g['lr'] / args.learning_anneal
         print('Learning rate annealed to: {lr:.6f}'.format(lr=g['lr']))
 
-        if main_proc and (best_wer is None or best_wer > wer):
+        if main_proc and (best_wer is None or best_wer > cer):
             print("Found better validated model, saving to %s" % args.model_path)
             torch.save(DeepSpeech.serialize(model, optimizer=optimizer, epoch=epoch, loss_results=loss_results,
                                             wer_results=wer_results, cer_results=cer_results)
                        , args.model_path)
-            best_wer = wer
-            avg_loss = 0
+            best_wer = cer
+
+        avg_loss = 0
 
         if not args.no_shuffle:
             print("Shuffling batches...")
