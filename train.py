@@ -3,6 +3,7 @@ import json
 import os
 import random
 import time
+import math
 
 import numpy as np
 import torch.distributed as dist
@@ -14,9 +15,11 @@ from tqdm import tqdm
 from data.data_loader import AudioDataLoader, SpectrogramDataset, BucketingSampler, DistributedBucketingSampler
 from decoder import BeamCTCDecoder,GreedyDecoder
 from logger import VisdomLogger, TensorBoardLogger
-from model import DeepSpeech, supported_rnns
+from model import DeepSpeech, supported_rnns, SequenceWise, BatchRNN
 from test import evaluate
 from utils import reduce_tensor, check_loss
+import torch.nn as nn
+from collections import OrderedDict
 
 parser = argparse.ArgumentParser(description='DeepSpeech training')
 parser.add_argument('--train-manifest', metavar='DIR',
@@ -165,6 +168,37 @@ if __name__ == '__main__':
                 visdom_logger.load_previous_values(start_epoch, package)
             if main_proc and args.tensorboard:  # Previous scores to tensorboard logs
                 tensorboard_logger.load_previous_values(start_epoch, package)
+        else:
+            print("Modifying fully connected final layer")
+            with open(args.labels_path) as label_file:
+                labels = str(''.join(json.load(label_file)))
+            model.labels = labels
+            fully_connected = nn.Sequential(
+                nn.BatchNorm1d(model.hidden_size),
+                nn.Linear(model.hidden_size, len(labels), bias=False)
+            )
+            model.fc = nn.Sequential(
+                SequenceWise(fully_connected),
+            )
+            print("Modifying RNNs")
+            sample_rate = model.audio_conf.get("sample_rate", 16000)
+            window_size = model.audio_conf.get("window_size", "0.02")
+            # Based on above convolutions and spectrogram size using conv formula (W - F + 2P)/ S+1
+            rnn_input_size = int(math.floor((sample_rate * window_size) / 2) + 1)
+            rnn_input_size = int(math.floor(rnn_input_size + 2 * 20 - 41) / 2 + 1)
+            rnn_input_size = int(math.floor(rnn_input_size + 2 * 10 - 21) / 2 + 1)
+            rnn_input_size *= 32
+
+            rnns = []
+            rnn = BatchRNN(input_size=rnn_input_size, hidden_size=model.hidden_size, rnn_type=model.rnn_type,
+                            bidirectional=model.bidirectional, batch_norm=False)
+            rnns.append(('0', rnn))
+            for x in range(args.hidden_layers - 1):
+                rnn = BatchRNN(input_size=model.hidden_size, hidden_size=model.hidden_size, rnn_type=model.rnn_type,
+                           bidirectional=model.bidirectional)
+                rnns.append(('%d' % (x + 1), rnn))
+            model.rnns = nn.Sequential(OrderedDict(rnns))
+
     else:
         with open(args.labels_path) as label_file:
             labels = str(''.join(json.load(label_file)))
